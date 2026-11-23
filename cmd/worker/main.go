@@ -49,7 +49,14 @@ func main() {
 
 	store := postgres.NewStore(pool)
 	cwmpCli := cwmpserver.New(&cfg.CWMP, log, store)
-	cipher, _ := security.NewSecretCipherFromHex(cfg.API.SecretMasterKeyHex)
+	var cipher *security.SecretCipher
+	if cfg.API.SecretMasterKeyHex != "" {
+		cipher, err = security.NewSecretCipherFromHex(cfg.API.SecretMasterKeyHex)
+		if err != nil {
+			log.Error("invalid NEXAACS_SECRET_MASTER_KEY", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+	}
 
 	pollInterval := time.Duration(cfg.Worker.PollIntervalSeconds) * time.Second
 	if pollInterval <= 0 {

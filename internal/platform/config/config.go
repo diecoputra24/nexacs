@@ -1,10 +1,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/nexaacs/nexaacs/internal/platform/security"
 	"gopkg.in/yaml.v3"
 )
 
@@ -82,6 +84,7 @@ type StorageConfig struct {
 	UploadsDir           string `yaml:"uploads_dir"`
 	BackupsDir           string `yaml:"backups_dir"`
 	FileServerListenAddr string `yaml:"file_server_listen_addr"`
+	PublicFileURL        string `yaml:"public_file_url"`
 }
 
 type ThresholdsConfig struct {
@@ -133,7 +136,7 @@ func Default() *Config {
 			MaxTaskRetries:          3,
 		},
 		Database: DatabaseConfig{
-			DSN:      "postgres://postgres:admin123@127.0.0.1:5432/nexaacs?sslmode=disable",
+			DSN:      "postgres://nexaacs@127.0.0.1:5432/nexaacs?sslmode=disable",
 			MaxConns: 25,
 			MinConns: 5,
 		},
@@ -171,8 +174,6 @@ func Load(path string) (*Config, error) {
 
 	if dsn := strings.TrimSpace(os.Getenv("NEXAACS_DB_DSN")); dsn != "" {
 		cfg.Database.DSN = dsn
-	} else if strings.TrimSpace(cfg.Database.DSN) == "" {
-		cfg.Database.DSN = "postgres://postgres:admin123@127.0.0.1:5432/nexaacs?sslmode=disable"
 	}
 	if addr := strings.TrimSpace(os.Getenv("NEXAACS_REDIS_ADDR")); addr != "" {
 		cfg.Redis.Addr = addr
@@ -180,10 +181,39 @@ func Load(path string) (*Config, error) {
 	if pass := os.Getenv("NEXAACS_REDIS_PASSWORD"); pass != "" {
 		cfg.Redis.Password = pass
 	}
+	if rawOrigins := strings.TrimSpace(os.Getenv("NEXAACS_CORS_ALLOWED_ORIGINS")); rawOrigins != "" {
+		var parsed []string
+		for _, item := range strings.Split(rawOrigins, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				parsed = append(parsed, trimmed)
+			}
+		}
+		if len(parsed) > 0 {
+			cfg.API.CORSAllowedOrigins = parsed
+		}
+	}
+	if pubURL := strings.TrimSpace(os.Getenv("NEXAACS_FILE_PUBLIC_URL")); pubURL != "" {
+		cfg.Storage.PublicFileURL = strings.TrimRight(pubURL, "/")
+	}
 	cfg.API.JWTSigningKey = strings.TrimSpace(os.Getenv("NEXAACS_JWT_SIGNING_KEY"))
 	cfg.API.SecretMasterKeyHex = strings.TrimSpace(os.Getenv("NEXAACS_SECRET_MASTER_KEY"))
 	cfg.CWMP.SharedUsername = strings.TrimSpace(os.Getenv("NEXAACS_CWMP_SHARED_USERNAME"))
 	cfg.CWMP.SharedPassword = os.Getenv("NEXAACS_CWMP_SHARED_PASSWORD")
 
 	return cfg, nil
+}
+
+// ValidateAPISecurity ensures cryptographic keys are configured safely before starting API services.
+func (c *Config) ValidateAPISecurity() error {
+	if len(c.API.JWTSigningKey) < 16 || strings.Contains(c.API.JWTSigningKey, "replace_with_") {
+		return errors.New("NEXAACS_JWT_SIGNING_KEY must be set to a random secret (minimum 16 characters; recommended: openssl rand -hex 32)")
+	}
+	if c.API.SecretMasterKeyHex != "" {
+		if _, err := security.NewSecretCipherFromHex(c.API.SecretMasterKeyHex); err != nil {
+			return fmt.Errorf("NEXAACS_SECRET_MASTER_KEY invalid: %w", err)
+		}
+	} else if strings.EqualFold(c.App.Environment, "production") {
+		return errors.New("NEXAACS_SECRET_MASTER_KEY (64 hex chars via openssl rand -hex 32) is required in production")
+	}
+	return nil
 }

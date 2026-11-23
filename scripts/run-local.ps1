@@ -20,13 +20,19 @@ if (Test-Path $EnvFile) {
 }
 
 if (-not $env:NEXAACS_DB_DSN) {
-    $env:NEXAACS_DB_DSN = "postgres://postgres:admin123@127.0.0.1:5432/nexaacs?sslmode=disable"
+    throw "NEXAACS_DB_DSN is not set. Copy .env.example to .env and configure your PostgreSQL credentials."
 }
 if (-not $env:NEXAACS_JWT_SIGNING_KEY) {
-    $env:NEXAACS_JWT_SIGNING_KEY = "dev-local-jwt-signing-key-change-in-production"
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $env:NEXAACS_JWT_SIGNING_KEY = ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    Write-Host "Generated ephemeral dev NEXAACS_JWT_SIGNING_KEY for this session." -ForegroundColor Yellow
 }
 if (-not $env:NEXAACS_SECRET_MASTER_KEY) {
-    $env:NEXAACS_SECRET_MASTER_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $env:NEXAACS_SECRET_MASTER_KEY = ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    Write-Host "Generated ephemeral dev NEXAACS_SECRET_MASTER_KEY for this session." -ForegroundColor Yellow
 }
 
 $GoBin = "C:\Program Files\Go\bin\go.exe"
@@ -40,7 +46,7 @@ if (-not (Test-Path (Join-Path $WebDir "node_modules"))) {
 }
 
 Write-Host ""
-Write-Host "Starting NexaACS Backend (go run) & Frontend (Vite)..." -ForegroundColor Green
+Write-Host "Starting NexACS Backend (go run) & Frontend (Vite)..." -ForegroundColor Green
 Write-Host "  UI (Web)    : http://localhost:8000"
 Write-Host "  API (NBI)   : http://127.0.0.1:7557"
 Write-Host "  CWMP (ACS)  : http://0.0.0.0:7547/cwmp"

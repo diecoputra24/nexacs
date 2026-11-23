@@ -1226,23 +1226,26 @@ func hashAPIKey(rawKey string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Store) ValidateAPIKey(ctx context.Context, rawKey string) (uuid.UUID, string, error) {
+func (s *Store) ValidateAPIKey(ctx context.Context, rawKey string) (uuid.UUID, string, []string, error) {
 	if strings.TrimSpace(rawKey) == "" {
-		return uuid.Nil, "", errors.New("empty api key")
+		return uuid.Nil, "", nil, errors.New("empty api key")
 	}
 	keyHash := hashAPIKey(rawKey)
 	var id, tenantID uuid.UUID
 	var name string
+	var scopesRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, name
+		SELECT id, tenant_id, name, scopes
 		FROM api_keys
 		WHERE key_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
-	`, keyHash).Scan(&id, &tenantID, &name)
+	`, keyHash).Scan(&id, &tenantID, &name, &scopesRaw)
 	if err != nil {
-		return uuid.Nil, "", errors.New("invalid or revoked api key")
+		return uuid.Nil, "", nil, errors.New("invalid or revoked api key")
 	}
+	var scopes []string
+	_ = json.Unmarshal(scopesRaw, &scopes)
 	_, _ = s.pool.Exec(ctx, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, id)
-	return tenantID, "api-key:" + name, nil
+	return tenantID, "api-key:" + name, scopes, nil
 }
 
 func (s *Store) CreateAPIKey(ctx context.Context, tenantID uuid.UUID, name string, scopes []string) (*APIKeyRow, string, error) {

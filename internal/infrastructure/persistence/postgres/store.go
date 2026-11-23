@@ -552,8 +552,15 @@ func (s *Store) QueueAutoSummonOnFirstDetect(ctx context.Context, dev *device.De
 	}
 
 	var lastSummon *time.Time
-	if err := s.pool.QueryRow(ctx, `SELECT last_summon_at FROM devices WHERE id = $1`, dev.ID).Scan(&lastSummon); err != nil {
+	var mfgRaw, mfgCanonical, oui, dmRoot, protoDB string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT last_summon_at, manufacturer_raw, manufacturer_canonical, oui, data_model_root, protocol
+		FROM devices WHERE id = $1
+	`, dev.ID).Scan(&lastSummon, &mfgRaw, &mfgCanonical, &oui, &dmRoot, &protoDB); err != nil {
 		return false, err
+	}
+	if dmRoot == "" {
+		dmRoot = dev.DataModelRoot
 	}
 	isBootstrap := false
 	for _, ev := range events {
@@ -566,8 +573,8 @@ func (s *Store) QueueAutoSummonOnFirstDetect(ctx context.Context, dev *device.De
 		return false, nil
 	}
 
-	// Never re-trigger automatically on periodic/boot informs once any summon task was already created before
-	// (unless explicitly triggered by 0 BOOTSTRAP re-registration).
+	// Avoid duplicate/storm summons: skip if an active summon is in flight, or completed while waiting for bootstrap,
+	// or one was already queued within the last 30 seconds.
 	var priorSummonCount int
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM tasks
@@ -575,7 +582,7 @@ func (s *Store) QueueAutoSummonOnFirstDetect(ctx context.Context, dev *device.De
 		  AND task_type IN ('summon', 'refresh_params')
 		  AND (
 		    status IN ('queued', 'waiting_for_device', 'executing')
-		    OR $2 = FALSE
+		    OR (status = 'completed' AND $2 = FALSE)
 		    OR created_at > NOW() - INTERVAL '30 seconds'
 		  )
 	`, dev.ID, isBootstrap).Scan(&priorSummonCount); err != nil {
@@ -587,12 +594,12 @@ func (s *Store) QueueAutoSummonOnFirstDetect(ctx context.Context, dev *device.De
 
 	groups := []string{"vparams"}
 	aliases, _ := s.LoadAliases(ctx, dev.TenantID)
-	matchedAlias := matchAliasRule(aliases, dev.OUI, dev.ManufacturerRaw, dev.ManufacturerCanonical)
+	matchedAlias := matchAliasRule(aliases, oui, mfgRaw, mfgCanonical)
 	var vp *mapping.VirtualParameterMapping
 	if matchedAlias != nil {
 		vp = &matchedAlias.VirtualParameters
 	}
-	paths := mapping.ResolveSummonPaths(dev.DataModelRoot, vp, groups)
+	paths := mapping.ResolveSummonPaths(dmRoot, vp, groups)
 	if len(paths) == 0 {
 		return false, nil
 	}
@@ -601,7 +608,10 @@ func (s *Store) QueueAutoSummonOnFirstDetect(ctx context.Context, dev *device.De
 		"groups": groups,
 		"paths":  paths,
 	})
-	proto := string(dev.Protocol)
+	proto := protoDB
+	if proto == "" {
+		proto = string(dev.Protocol)
+	}
 	if proto == "" {
 		proto = "TR-069"
 	}
@@ -710,6 +720,41 @@ func (s *Store) CompleteTask(ctx context.Context, taskID uuid.UUID, result map[s
 					END
 				WHERE id IN (SELECT id FROM downstream)
 			`, deviceID, replaceToken, instStr, taskID.String())
+		}
+	}
+	if taskType == string(task.TypeDeleteObject) {
+		var pMap map[string]interface{}
+		_ = json.Unmarshal(payloadRaw, &pMap)
+		if objName, _ := pMap["object_name"].(string); strings.TrimSpace(objName) != "" {
+			cleanPrefix := strings.TrimSuffix(strings.TrimSpace(objName), ".")
+			if cleanPrefix != "" {
+				_, _ = s.pool.Exec(ctx, `
+					DELETE FROM device_parameters
+					WHERE device_id = $1 AND (parameter_path = $2 OR parameter_path LIKE $3)
+				`, deviceID, cleanPrefix, cleanPrefix+".%")
+			}
+			_, _ = s.pool.Exec(ctx, `
+				UPDATE devices d
+				SET wan_ip = COALESCE((
+						SELECT NULLIF(dp.value, '')::inet
+						FROM device_parameters dp
+						WHERE dp.device_id = d.id
+						  AND (dp.canonical_key = 'wan.external_ip' OR dp.parameter_path LIKE '%.ExternalIPAddress')
+						  AND COALESCE(dp.value, '') ~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+						  AND dp.value <> '0.0.0.0'
+						ORDER BY dp.parameter_path ASC LIMIT 1
+					), NULL),
+					pppoe_username = COALESCE((
+						SELECT dp.value
+						FROM device_parameters dp
+						WHERE dp.device_id = d.id
+						  AND (dp.canonical_key = 'wan.pppoe_username' OR dp.parameter_path LIKE '%.WANPPPConnection.%.Username')
+						  AND COALESCE(dp.value, '') <> ''
+						ORDER BY dp.parameter_path ASC LIMIT 1
+					), ''),
+					updated_at = NOW()
+				WHERE d.id = $1
+			`, deviceID)
 		}
 	}
 	// Unblock any remaining chained task waiting on this task ID.

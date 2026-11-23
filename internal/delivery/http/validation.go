@@ -11,10 +11,42 @@ import (
 )
 
 var (
-	reUsername = regexp.MustCompile(`^[a-zA-Z0-9._-]{2,64}$`)
-	reSerial   = regexp.MustCompile(`^[A-Za-z0-9._-]{3,64}$`)
-	reOUIHex   = regexp.MustCompile(`^[0-9A-Fa-f]{6}$`)
+	reUsername   = regexp.MustCompile(`^[a-zA-Z0-9._-]{2,64}$`)
+	reSerial     = regexp.MustCompile(`^[A-Za-z0-9._-]{3,64}$`)
+	reOUIHex     = regexp.MustCompile(`^[0-9A-Fa-f]{6}$`)
+	reFwFileName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,160}$`)
+	reSafeHost   = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}$`)
 )
+
+func sanitizeFirmwareFilename(raw string) string {
+	base := strings.TrimSpace(raw)
+	base = strings.ReplaceAll(base, "\\", "/")
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	if base == "" || base == "." || base == ".." || !reFwFileName.MatchString(base) {
+		return ""
+	}
+	return base
+}
+
+func validateHTTPRequestHost(rawHost string) string {
+	host := strings.TrimSpace(rawHost)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() == nil {
+			return "[" + ip.String() + "]"
+		}
+		return ip.String()
+	}
+	if reSafeHost.MatchString(host) && !strings.Contains(host, "..") {
+		return host
+	}
+	return ""
+}
 
 func validateUsername(raw string) error {
 	if !reUsername.MatchString(raw) {

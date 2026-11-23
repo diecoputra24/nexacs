@@ -1806,7 +1806,7 @@ interface AcsState {
   runPingDiagnostics: (deviceId: string, host: string, count?: number) => Promise<{ ok: boolean; error?: string }>;
 
   // Device Operations
-  triggerSummon: (deviceId: string, groups: SummonGroup[]) => { taskId: string; status: string };
+  triggerSummon: (deviceId: string, groups: SummonGroup[], customPaths?: string[]) => { taskId: string; status: string };
   triggerBatchSummon: (deviceIds: string[], groups: SummonGroup[]) => Promise<string[]>;
   triggerParamRefresh: (deviceId: string) => { taskId: string };
   triggerReboot: (deviceId: string) => { ok: boolean; error?: string; taskId?: string };
@@ -1851,6 +1851,15 @@ interface AcsState {
       serviceList: string;
       natEnabled: boolean;
       portBindings?: WANConnection['portBindings'];
+    },
+  ) => { ok: boolean; error?: string; taskId?: string };
+  deleteWanConnection: (
+    deviceId: string,
+    instanceIndex: number,
+    opts?: {
+      objectPath?: string;
+      connectionDevicePath?: string;
+      connectionType?: WANConnection['connectionType'];
     },
   ) => { ok: boolean; error?: string; taskId?: string };
   updateWifiConfig: (
@@ -3019,7 +3028,7 @@ export const useAcsStore = create<AcsState>((set, get) => ({
     return uniqueIds.map((id) => get().triggerSummon(id, groups).taskId);
   },
 
-  triggerSummon: (deviceId, groups) => {
+  triggerSummon: (deviceId, groups, customPaths) => {
     const state = get();
     const dev = state.devices.find((d) => d.id === deviceId) ?? state.devicePageItems.find((d) => d.id === deviceId);
     const taskId = uid('tsk');
@@ -3028,6 +3037,14 @@ export const useAcsStore = create<AcsState>((set, get) => ({
     const createdAt = new Date().toISOString();
 
     if (!dev) return { taskId, status: 'failed' };
+
+    const cleanPaths = (customPaths ?? []).map((p) => p.trim()).filter(Boolean);
+    const isTargetedPathSummon = cleanPaths.length > 0;
+    const summaryText = isTargetedPathSummon
+      ? cleanPaths.length === 1
+        ? `Summon VParam (${cleanPaths[0]})`
+        : `Summon ${cleanPaths.length} VParam path(s)`
+      : `Summon queued (${groups.join(', ')})`;
 
     const newTask: TaskRecord = {
       id: taskId,
@@ -3040,7 +3057,7 @@ export const useAcsStore = create<AcsState>((set, get) => ({
       status: 'queued',
       correlationId: corrId,
       requestedGroups: groups,
-      summary: `Summon queued (${groups.join(', ')})`,
+      summary: summaryText,
       durationMs: null,
       logs: [`[${createdAt}] Summon job ${summonJobId} queued by ${state.currentUser.username}`],
       createdAt,
@@ -3062,7 +3079,9 @@ export const useAcsStore = create<AcsState>((set, get) => ({
             action: 'device.summon',
             targetType: 'device',
             targetId: dev.serialNumber,
-            metadata: { task_id: taskId, groups: groups.join(',') },
+            metadata: isTargetedPathSummon
+              ? { task_id: taskId, paths: cleanPaths.join(',') }
+              : { task_id: taskId, groups: groups.join(',') },
             createdAt,
           },
           ...s.auditLogs,
@@ -3072,7 +3091,9 @@ export const useAcsStore = create<AcsState>((set, get) => ({
             id: uid('rt'),
             type: 'summon.started',
             deviceId: dev.id,
-            message: `Summon queued for ${dev.serialNumber} (${groups.length} groups)`,
+            message: isTargetedPathSummon
+              ? `Summon queued for ${dev.serialNumber} (${cleanPaths.length} VParam path)`
+              : `Summon queued for ${dev.serialNumber} (${groups.length} groups)`,
             timestamp: createdAt,
           },
           ...s.realtimeEvents.slice(0, 29),
@@ -3082,8 +3103,9 @@ export const useAcsStore = create<AcsState>((set, get) => ({
 
     // In live backend mode, dispatch real API task & poll only lightweight endpoints (avoid 15-call full refresh storm)
     if (state.apiMode === 'backend') {
+      const payload = isTargetedPathSummon ? { paths: cleanPaths } : { groups };
       void apiClient
-        .post<{ data?: { task_id?: string } }>(`/devices/${deviceId}/summon`, { groups })
+        .post<{ data?: { task_id?: string } }>(`/devices/${deviceId}/summon`, payload)
         .then((res) => {
           const realTaskId = res.data?.data?.task_id;
           if (realTaskId) {
@@ -3206,7 +3228,9 @@ export const useAcsStore = create<AcsState>((set, get) => ({
               status: 'completed' as const,
               completedAt: endIso,
               durationMs: 1180,
-              summary: `Summon succeeded across ${groups.length} group(s)`,
+              summary: isTargetedPathSummon
+                ? `Summon VParam completed (${cleanPaths.length} path)`
+                : `Summon succeeded across ${groups.length} group(s)`,
               logs: [...t.logs, `[${endIso}] CPE responded with parameter tree`, `[${endIso}] Database updated`],
             }
             : t,
@@ -3271,11 +3295,19 @@ export const useAcsStore = create<AcsState>((set, get) => ({
                 ]
                 : d.connectedHosts;
 
-            let syncedParams: DeviceParameter[] = d.parameters.map((p) =>
-              p.readState === 'not_fetched' && p.canonicalKey === 'wan.external_ip' && nextWan?.[0]?.wanIp
+            let syncedParams: DeviceParameter[] = d.parameters.map((p) => {
+              if (isTargetedPathSummon && cleanPaths.some((cp) => p.path === cp || p.path.startsWith(cp))) {
+                return {
+                  ...p,
+                  readState: p.readState === 'not_fetched' ? ('available' as const) : p.readState,
+                  lastAttemptAt: endIso,
+                  lastSuccessAt: endIso,
+                };
+              }
+              return p.readState === 'not_fetched' && p.canonicalKey === 'wan.external_ip' && nextWan?.[0]?.wanIp
                 ? { ...p, value: nextWan[0].wanIp, readState: 'available' as const, lastAttemptAt: endIso, lastSuccessAt: endIso }
-                : { ...p, lastAttemptAt: endIso },
-            );
+                : { ...p, lastAttemptAt: endIso };
+            });
             const matched = findAliasForDevice(d, s.aliases);
             if (groups.includes('wan') && nextWan) {
               for (const w of nextWan) {
@@ -4059,6 +4091,166 @@ export const useAcsStore = create<AcsState>((set, get) => ({
       }));
       get().triggerSummon(deviceId, ['wan']);
     }, 900);
+
+    return { ok: true, taskId };
+  },
+
+  deleteWanConnection: (deviceId, instanceIndex, opts) => {
+    if (!get().hasPermission('devices.parameters.write')) {
+      return { ok: false, error: 'Permission denied: devices.parameters.write required' };
+    }
+    const dev = get().devices.find((d) => d.id === deviceId);
+    if (!dev) return { ok: false, error: 'Device not found' };
+
+    const matched = findAliasForDevice(dev, get().aliases);
+    const vpRoot = instantiateVirtualTemplate(matched?.virtualParameters.wanRoot ?? '', instanceIndex);
+    const ensureDot = (p: string) => (p.endsWith('.') ? p : `${p}.`);
+    const connDevPath = opts?.connectionDevicePath || (vpRoot ? ensureDot(vpRoot) : `${dev.dataModelRoot}WANDevice.1.WANConnectionDevice.${instanceIndex}.`);
+    const siblingCount = (dev.wanConnections ?? []).filter(
+      (w) => (w.connectionDevicePath ?? '') === connDevPath && connDevPath !== '',
+    ).length;
+    const resolvedObjectPath =
+      siblingCount > 1 && opts?.objectPath
+        ? ensureDot(opts.objectPath)
+        : dev.dataModelRoot === 'Device.'
+          ? ensureDot(opts?.objectPath || (opts?.connectionType === 'PPPoE' ? `Device.PPP.Interface.${instanceIndex}.` : vpRoot || `Device.IP.Interface.${instanceIndex}.`))
+          : ensureDot(connDevPath);
+
+    const taskId = uid('tsk');
+    const nowIso = new Date().toISOString();
+    const task: TaskRecord = {
+      id: taskId,
+      deviceId,
+      deviceSerial: dev.serialNumber,
+      requestedBy: get().currentUser.username,
+      protocol: dev.protocol,
+      taskType: 'delete_object',
+      status: 'queued',
+      correlationId: uid('corr'),
+      summary: `Delete WAN #${instanceIndex} (${resolvedObjectPath})`,
+      durationMs: null,
+      logs: [`[${nowIso}] Queued DeleteObject (${resolvedObjectPath}) + VParams Summon`],
+      createdAt: nowIso,
+      startedAt: null,
+      completedAt: null,
+    };
+
+    set((s) => ({
+      tasks: [task, ...s.tasks],
+      auditLogs: [
+        {
+          id: uid('aud'),
+          actorUsername: s.currentUser.username,
+          actorEmail: s.currentUser.username,
+          actorRole: s.currentUser.role,
+          action: 'device.wan.deleted',
+          targetType: 'device',
+          targetId: dev.serialNumber,
+          metadata: { wan_index: instanceIndex, object_name: resolvedObjectPath },
+          createdAt: nowIso,
+        },
+        ...s.auditLogs,
+      ],
+    }));
+
+    if (get().apiMode === 'backend') {
+      void apiClient
+        .delete<{ data?: { task_id?: string } }>(`/devices/${deviceId}/wan/${instanceIndex}`, {
+          data: {
+            objectPath: opts?.objectPath || resolvedObjectPath,
+            connectionType: opts?.connectionType ?? '',
+          },
+        })
+        .then((res) => {
+          const realTaskId = res.data?.data?.task_id;
+          if (realTaskId) {
+            set((s) => ({
+              taskAliasMap: { ...s.taskAliasMap, [taskId]: realTaskId },
+              tasks: s.tasks.map((t) =>
+                t.id === taskId ? { ...t, id: realTaskId, correlationId: realTaskId } : t,
+              ),
+            }));
+          }
+          window.setTimeout(() => void get().loadDeviceDetailFromBackend(deviceId), 1200);
+          window.setTimeout(() => void get().loadDeviceDetailFromBackend(deviceId), 2800);
+        })
+        .catch((err) => markTaskBackendFailed(set, taskId, err));
+      return { ok: true, taskId };
+    }
+
+    setTimeout(() => {
+      const doneIso = new Date().toISOString();
+      const target = get().devices.find((d) => d.id === deviceId);
+      const unreachable = !target || !target.lastInformAt || target.simulatedUnreachable;
+
+      if (unreachable) {
+        const faultId = `FLT-${Math.floor(1000 + Math.random() * 9000)}`;
+        const reason = `CPE unreachable: Delete WAN ${instanceIndex} timed out`;
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === taskId
+              ? { ...t, status: 'failed', startedAt: nowIso, completedAt: doneIso, durationMs: 900, summary: reason }
+              : t,
+          ),
+          faults: [
+            {
+              id: faultId,
+              deviceId,
+              deviceSerial: dev.serialNumber,
+              manufacturerModel: `${dev.manufacturerCanonical} / ${dev.modelName}`,
+              ipAddress: dev.trSourceIp,
+              taskId,
+              operation: 'Delete WAN Object',
+              protocol: dev.protocol,
+              category: 'parameter_write_failed',
+              correlationId: task.correlationId,
+              failedParameters: [resolvedObjectPath],
+              errorCode: 'CR_TIMEOUT',
+              errorMessage: reason,
+              sanitizedLogs: `DeleteObject failed for ${resolvedObjectPath} (${reason})`,
+              status: 'open',
+              retryCount: 0,
+              lastAttemptAt: doneIso,
+              createdAt: doneIso,
+              resolvedAt: null,
+            },
+            ...s.faults,
+          ],
+        }));
+        return;
+      }
+
+      const cleanPrefix = resolvedObjectPath.replace(/\.$/, '');
+      set((s) => ({
+        devices: s.devices.map((d) => {
+          if (d.id !== deviceId) return d;
+          const remainingWans = (d.wanConnections ?? []).filter((w) => w.instanceIndex !== instanceIndex);
+          const nextParams = d.parameters.filter(
+            (p) => p.path !== cleanPrefix && !p.path.startsWith(`${cleanPrefix}.`),
+          );
+          return {
+            ...d,
+            wanConnections: remainingWans,
+            parameters: nextParams,
+            wanIp: remainingWans[0]?.wanIp ?? null,
+            pppoeUsername: remainingWans[0]?.pppoeUsername ?? null,
+          };
+        }),
+        tasks: s.tasks.map((t) =>
+          t.id === taskId
+            ? {
+              ...t,
+              status: 'completed',
+              startedAt: nowIso,
+              completedAt: doneIso,
+              durationMs: 820,
+              logs: [...t.logs, `[${doneIso}] DeleteObjectResponse Status=0 (${resolvedObjectPath})`],
+            }
+            : t,
+        ),
+      }));
+      get().triggerSummon(deviceId, ['vparams']);
+    }, 850);
 
     return { ok: true, taskId };
   },

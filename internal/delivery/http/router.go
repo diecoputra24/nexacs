@@ -151,6 +151,7 @@ func NewRouter(cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool, wsHub *
 				dev.With(s.requirePermission("devices.view")).Post("/{id}/parameters/get", s.handleQueueDeviceTask("get_parameter_values"))
 				dev.With(s.requirePermission("devices.parameters.write")).Post("/{id}/parameters/set", s.handleQueueDeviceTask("set_parameter_values"))
 				dev.With(s.requirePermission("devices.parameters.write")).Post("/{id}/wan", s.handleCreateWanConnection)
+				dev.With(s.requirePermission("devices.parameters.write")).Delete("/{id}/wan/{instanceIndex}", s.handleDeleteWanConnection)
 				dev.With(s.requirePermission("devices.credentials.edit")).Put("/{id}/credentials", s.handleUpdateCredentials)
 				dev.With(s.requirePermission("devices.secrets.view")).Post("/{id}/credentials/reveal", s.handleRevealCredentials)
 				dev.With(s.requirePermission("devices.parameters.write")).Post("/{id}/provision", s.handleProvisionByDeviceID)
@@ -218,6 +219,74 @@ type callerIdentity struct {
 	Username string
 	Role     string
 	APIKey   bool
+	Scopes   []string
+}
+
+func apiKeyHasPermission(scopes []string, code string) bool {
+	for _, raw := range scopes {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if s == "*" || s == "admin" || s == code {
+			return true
+		}
+		switch s {
+		case "devices:read":
+			if code == "overview.view" || code == "devices.view" {
+				return true
+			}
+		case "devices:summon":
+			if code == "devices.view" || code == "devices.summon" {
+				return true
+			}
+		case "devices:write":
+			if code == "devices.view" || code == "devices.summon" || code == "devices.parameters.write" || code == "devices.reboot" {
+				return true
+			}
+		case "provisioning:write":
+			if code == "devices.view" || code == "devices.parameters.write" {
+				return true
+			}
+		case "devices:danger":
+			if code == "devices.factory_reset" || code == "devices.delete" || code == "devices.credentials.edit" {
+				return true
+			}
+		case "secrets:read":
+			if code == "devices.secrets.view" {
+				return true
+			}
+		case "faults:read":
+			if code == "faults.view" {
+				return true
+			}
+		case "faults:write":
+			if code == "faults.view" || code == "faults.manage" {
+				return true
+			}
+		case "firmware:read":
+			if code == "firmware.view" {
+				return true
+			}
+		case "firmware:write":
+			if code == "firmware.view" || code == "firmware.deploy" {
+				return true
+			}
+		case "settings:read":
+			if code == "settings.view" {
+				return true
+			}
+		case "settings:write":
+			if code == "settings.view" || code == "settings.manage" {
+				return true
+			}
+		case "security:manage":
+			if code == "security.users.manage" || code == "security.trust.manage" || code == "security.audit.view" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -226,8 +295,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		auth := strings.TrimSpace(r.Header.Get("Authorization"))
 		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 			rawTok = strings.TrimSpace(auth[len("bearer "):])
-		} else if qTok := strings.TrimSpace(r.URL.Query().Get("token")); qTok != "" {
-			rawTok = qTok
+		} else if r.URL.Path == "/ws/v1/events" {
+			if qTok := strings.TrimSpace(r.URL.Query().Get("token")); qTok != "" {
+				rawTok = qTok
+			}
 		}
 		if rawTok != "" {
 			claims, err := security.VerifyStatelessToken(rawTok, s.cfg.API.JWTSigningKey)
@@ -238,8 +309,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			}
 		}
 		if apiKey := strings.TrimSpace(r.Header.Get("X-API-Key")); apiKey != "" {
-			if _, label, err := s.store.ValidateAPIKey(r.Context(), apiKey); err == nil {
-				ctx := context.WithValue(r.Context(), callerCtxKey{}, callerIdentity{Username: label, Role: "Super Admin", APIKey: true})
+			if _, label, scopes, err := s.store.ValidateAPIKey(r.Context(), apiKey); err == nil {
+				ctx := context.WithValue(r.Context(), callerCtxKey{}, callerIdentity{
+					Username: label,
+					Role:     "API Key",
+					APIKey:   true,
+					Scopes:   scopes,
+				})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -257,7 +333,11 @@ func (s *Server) requirePermission(code string) func(http.Handler) http.Handler 
 				return
 			}
 			if id.APIKey {
-				next.ServeHTTP(w, r)
+				if apiKeyHasPermission(id.Scopes, code) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeError(w, http.StatusForbidden, "forbidden: api key scope for "+code+" required")
 				return
 			}
 			_, perms, err := s.store.LookupUserPermissions(r.Context(), postgres.DefaultTenantID, id.Username)
@@ -1012,6 +1092,127 @@ func (s *Server) handleCreateWanConnection(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) handleDeleteWanConnection(w http.ResponseWriter, r *http.Request) {
+	deviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid device id")
+		return
+	}
+	instanceIdx, err := strconv.Atoi(strings.TrimSpace(chi.URLParam(r, "instanceIndex")))
+	if err != nil || instanceIdx < 1 || instanceIdx > 64 {
+		writeError(w, http.StatusBadRequest, "instanceIndex must be between 1 and 64")
+		return
+	}
+	if ok, reason := s.checkReachableForLiveAction(r.Context(), deviceID); !ok {
+		writeError(w, http.StatusConflict, reason)
+		return
+	}
+
+	var req struct {
+		ObjectPath     string `json:"objectPath"`
+		ConnectionType string `json:"connectionType"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if strings.TrimSpace(req.ObjectPath) == "" {
+		req.ObjectPath = strings.TrimSpace(r.URL.Query().Get("objectPath"))
+	}
+	if strings.TrimSpace(req.ConnectionType) == "" {
+		req.ConnectionType = strings.TrimSpace(r.URL.Query().Get("connectionType"))
+	}
+	if req.ObjectPath != "" && !strings.HasPrefix(req.ObjectPath, "InternetGatewayDevice.") && !strings.HasPrefix(req.ObjectPath, "Device.") {
+		writeError(w, http.StatusBadRequest, "objectPath must start with InternetGatewayDevice. or Device.")
+		return
+	}
+
+	rt := s.currentRuntimeSettings(r.Context())
+	detail, err := s.store.GetDeviceDetail(r.Context(), postgres.DefaultTenantID, deviceID, rt.OnlineThresholdSeconds)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "device not found")
+		return
+	}
+	var vp *mapping.VirtualParameterMapping
+	if detail.MatchedAlias != nil {
+		vp = &detail.MatchedAlias.VirtualParameters
+	}
+	paramPaths := make([]string, 0, len(detail.Parameters))
+	for _, p := range detail.Parameters {
+		paramPaths = append(paramPaths, p.Path)
+	}
+	objName := mapping.ResolveWanDeleteObjectPath(
+		detail.Device.DataModelRoot,
+		vp,
+		paramPaths,
+		req.ObjectPath,
+		instanceIdx,
+		req.ConnectionType,
+	)
+	if objName == "" {
+		writeError(w, http.StatusBadRequest, "unable to resolve WAN DeleteObject path for this device")
+		return
+	}
+
+	proto := string(detail.Device.Protocol)
+	if proto == "" {
+		proto = "TR-069"
+	}
+
+	deleteTaskID := uuid.New()
+	deletePayload, _ := json.Marshal(map[string]interface{}{
+		"object_name":     objName,
+		"instance_index":  instanceIdx,
+		"connection_type": req.ConnectionType,
+	})
+
+	summonTaskID := uuid.New()
+	summonPaths := mapping.ResolveSummonPaths(detail.Device.DataModelRoot, vp, []string{"vparams"})
+	summonPayload, _ := json.Marshal(map[string]interface{}{
+		"source":     "wan_delete",
+		"groups":     []string{"vparams"},
+		"paths":      summonPaths,
+		"blocked_by": deleteTaskID.String(),
+	})
+
+	if _, err := s.pool.Exec(r.Context(), `
+		INSERT INTO tasks (id, tenant_id, device_id, protocol, task_type, status, payload)
+		VALUES ($1, $2, $3, $4, 'delete_object', 'queued', $5),
+		       ($6, $2, $3, $4, 'summon', 'queued', $7)
+	`, deleteTaskID, postgres.DefaultTenantID, deviceID, proto, deletePayload, summonTaskID, summonPayload); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	email, _ := s.callerFromRequest(r)
+	s.store.InsertAuditLog(r.Context(), postgres.DefaultTenantID, email, "device.wan.deleted", "device", detail.Device.SerialNumber, map[string]interface{}{
+		"instance_index":  instanceIdx,
+		"connection_type": req.ConnectionType,
+		"object_name":     objName,
+		"task_id":         deleteTaskID,
+		"summon_task_id":  summonTaskID,
+	})
+	s.wsHub.Broadcast(websocket.Event{
+		Type:     "task.started",
+		TenantID: postgres.DefaultTenantID.String(),
+		DeviceID: deviceID.String(),
+		Data: map[string]interface{}{
+			"task_id":   deleteTaskID,
+			"task_type": "delete_object",
+			"status":    "queued",
+		},
+	})
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"task_id":        deleteTaskID,
+			"summon_task_id": summonTaskID,
+			"object_name":    objName,
+			"status":         "queued",
+			"message":        "WAN deletion queued (DeleteObject + VParams Summon)",
+		},
+	})
+}
+
 func (s *Server) handleRunPingDiagnostics(w http.ResponseWriter, r *http.Request) {
 	deviceID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -1444,13 +1645,26 @@ func (s *Server) handleUploadFirmware(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	safeName := filepath.Base(hdr.Filename)
+	safeName := sanitizeFirmwareFilename(hdr.Filename)
+	if safeName == "" {
+		writeError(w, http.StatusBadRequest, "invalid firmware filename (use letters, digits, '.', '_', '-')")
+		return
+	}
 	fwDir := s.cfg.Storage.FirmwareDir
 	if fwDir == "" {
 		fwDir = "./data/firmware"
 	}
 	_ = os.MkdirAll(fwDir, 0o755)
-	dstPath := filepath.Join(fwDir, safeName)
+	absDir, err := filepath.Abs(fwDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "invalid firmware storage directory")
+		return
+	}
+	dstPath := filepath.Join(absDir, safeName)
+	if !strings.HasPrefix(dstPath, absDir+string(filepath.Separator)) {
+		writeError(w, http.StatusBadRequest, "invalid firmware file path")
+		return
+	}
 	dst, err := os.Create(dstPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1523,15 +1737,18 @@ func (s *Server) handleDeployFirmware(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "deviceIds required")
 		return
 	}
-	host := strings.Split(r.Host, ":")[0]
-	if host == "" {
-		host = "127.0.0.1"
+	baseFileURL := strings.TrimRight(strings.TrimSpace(s.cfg.Storage.PublicFileURL), "/")
+	if baseFileURL == "" {
+		host := validateHTTPRequestHost(r.Host)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		fsPort := "7567"
+		if parts := strings.Split(s.cfg.Storage.FileServerListenAddr, ":"); len(parts) > 1 && parts[len(parts)-1] != "" {
+			fsPort = parts[len(parts)-1]
+		}
+		baseFileURL = fmt.Sprintf("http://%s:%s", host, fsPort)
 	}
-	fsPort := "7567"
-	if parts := strings.Split(s.cfg.Storage.FileServerListenAddr, ":"); len(parts) > 1 && parts[len(parts)-1] != "" {
-		fsPort = parts[len(parts)-1]
-	}
-	baseFileURL := fmt.Sprintf("http://%s:%s", host, fsPort)
 	taskIDs, err := s.store.QueueFirmwareDeploy(r.Context(), postgres.DefaultTenantID, fwID, body.DeviceIDs, baseFileURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

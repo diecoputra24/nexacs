@@ -311,7 +311,7 @@ function InlineActionMorph({
   });
 
   return (
-    <Box sx={{ display: 'inline-grid', alignItems: 'center', width: 60, height: 28 }}>
+    <Box sx={{ display: 'inline-grid', alignItems: 'center', width: 68, height: 28 }}>
       <Box aria-hidden={mode !== 'view'} sx={layerSx(mode === 'view', 'scale(0.8)')}>
         {viewAction}
       </Box>
@@ -351,6 +351,7 @@ export function DeviceDetailPage() {
   const updateDeviceCredentials = useAcsStore((s) => s.updateDeviceCredentials);
   const updateWanConnection = useAcsStore((s) => s.updateWanConnection);
   const addWanConnection = useAcsStore((s) => s.addWanConnection);
+  const deleteWanConnection = useAcsStore((s) => s.deleteWanConnection);
   const updateWifiConfig = useAcsStore((s) => s.updateWifiConfig);
   const addWifiRadio = useAcsStore((s) => s.addWifiRadio);
   const updateDhcpConfig = useAcsStore((s) => s.updateDhcpConfig);
@@ -397,6 +398,17 @@ export function DeviceDetailPage() {
   const [credForm, setCredForm] = useState({ adminPassword: '', userPassword: '', connectionRequestPassword: '' });
   const [editingWanIndex, setEditingWanIndex] = useState<number | null>(null);
   const [savingWanIndex, setSavingWanIndex] = useState<number | null>(null);
+  const [deletingWanIndex, setDeletingWanIndex] = useState<number | null>(null);
+  const [deleteWanConfirmTarget, setDeleteWanConfirmTarget] = useState<{
+    instanceIndex: number;
+    name: string;
+    connectionType: WANConnection['connectionType'];
+    vlanLabel: string;
+    targetPath: string;
+    objectPath?: string;
+    connectionDevicePath?: string;
+  } | null>(null);
+  const [summoningParamPath, setSummoningParamPath] = useState<string | null>(null);
   const [wanForm, setWanForm] = useState<{
     connectionType: WANConnection['connectionType'];
     addressingMode: 'DHCP' | 'Static';
@@ -565,6 +577,7 @@ export function DeviceDetailPage() {
     if (t.status === 'completed') {
       watchedTaskIdRef.current = null;
       setSavingWanIndex(null);
+      setDeletingWanIndex(null);
       setSavingWifiIndex(null);
       setEditingWanIndex(null);
       setEditingWifiIndex(null);
@@ -576,26 +589,31 @@ export function DeviceDetailPage() {
       setEditingDhcp(false);
       setSavingParamPath(null);
       setEditingParamPath(null);
+      setSummoningParamPath(null);
       showToast('success', t.summary || `Task ${t.taskType} completed.`);
     } else if (t.status === 'failed' || t.status === 'timeout') {
       watchedTaskIdRef.current = null;
       setSavingWanIndex(null);
+      setDeletingWanIndex(null);
       setSavingWifiIndex(null);
       setSavingNewWan(false);
       setSavingNewWifi(false);
       setSavingDhcp(false);
       setSavingParamPath(null);
+      setSummoningParamPath(null);
       showToast('error', t.summary || `Task ${t.taskType} failed.`);
     }
   }, [deviceTasks, taskAliasMap]);
 
   const isAnyInlineSaving =
     savingWanIndex !== null ||
+    deletingWanIndex !== null ||
     savingNewWan ||
     savingWifiIndex !== null ||
     savingNewWifi ||
     savingDhcp ||
-    Boolean(savingParamPath);
+    Boolean(savingParamPath) ||
+    Boolean(summoningParamPath);
 
   // Poll device detail rapidly while an inline WAN/WLAN/parameter save is running,
   // and cleanly handle CPEs whose Connection Request port is firewalled (waiting for Periodic Inform).
@@ -613,11 +631,13 @@ export function DeviceDetailPage() {
       const currentTask = resolvedId ? state.tasks.find((item) => item.id === resolvedId) : undefined;
       watchedTaskIdRef.current = null;
       setSavingWanIndex(null);
+      setDeletingWanIndex(null);
       setSavingWifiIndex(null);
       setSavingNewWan(false);
       setSavingNewWifi(false);
       setSavingDhcp(false);
       setSavingParamPath(null);
+      setSummoningParamPath(null);
       if (currentTask && (currentTask.status === 'queued' || currentTask.status === 'waiting_for_device')) {
         setEditingWanIndex(null);
         setEditingWifiIndex(null);
@@ -1195,13 +1215,13 @@ export function DeviceDetailPage() {
                         {b.label}
                       </TableCell>
                     ))}
-                    <TableCell align="right">Edit</TableCell>
+                    <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {(device.wanConnections ?? []).map((w) => {
                     const isEditing = editingWanIndex === w.instanceIndex;
-                    const isSaving = savingWanIndex === w.instanceIndex;
+                    const isSaving = savingWanIndex === w.instanceIndex || deletingWanIndex === w.instanceIndex;
                     const wanRevealed = revealedWanIndex === w.instanceIndex;
                     const rowMode = isSaving ? 'saving' : isEditing ? 'edit' : 'view';
                     const editUsedPorts = getUsedPortsByOtherWans(device.wanConnections, w.instanceIndex);
@@ -1687,32 +1707,82 @@ export function DeviceDetailPage() {
                           <InlineActionMorph
                             mode={rowMode}
                             viewAction={
-                              <IconButton
-                                size="small"
-                                disabled={!hasPermission('devices.parameters.write')}
-                                onClick={() => {
-                                  setEditingWanIndex(w.instanceIndex);
-                                  setWanForm({
-                                    connectionType: w.connectionType,
-                                    addressingMode: wanAddressingMode,
-                                    pppoeUsername: wanUsername ?? '',
-                                    pppoePassword: wanPassword ?? '',
-                                    vlanEnabled: wanVlanType === 'tag' && wanVlanEnabled,
-                                    vlanType: wanVlanType,
-                                    vlanId: wanVlan !== undefined ? String(wanVlan) : wanVlanEnabled ? '' : '0',
-                                    wanIp: wanIpDisplay && wanIpDisplay !== '-' ? wanIpDisplay : '',
-                                    subnetMask: wanSubnetMask || '255.255.255.0',
-                                    gateway: wanGateway && wanGateway !== '-' ? wanGateway : '',
-                                    dns: wanDns || '1.1.1.1, 8.8.8.8',
-                                    serviceList: wanService,
-                                    natEnabled: wanNat,
-                                    portBindings: { ...wanBindings },
-                                  });
-                                }}
-                                sx={actionIconBtnSx}
-                              >
-                                <EditOutlinedIcon fontSize="small" />
-                              </IconButton>
+                              <Stack direction="row" spacing={0.25} justifyContent="flex-end">
+                                <Tooltip title="Edit WAN">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      disabled={!hasPermission('devices.parameters.write') || deletingWanIndex !== null}
+                                      onClick={() => {
+                                        setEditingWanIndex(w.instanceIndex);
+                                        setWanForm({
+                                          connectionType: w.connectionType,
+                                          addressingMode: wanAddressingMode,
+                                          pppoeUsername: wanUsername ?? '',
+                                          pppoePassword: wanPassword ?? '',
+                                          vlanEnabled: wanVlanType === 'tag' && wanVlanEnabled,
+                                          vlanType: wanVlanType,
+                                          vlanId: wanVlan !== undefined ? String(wanVlan) : wanVlanEnabled ? '' : '0',
+                                          wanIp: wanIpDisplay && wanIpDisplay !== '-' ? wanIpDisplay : '',
+                                          subnetMask: wanSubnetMask || '255.255.255.0',
+                                          gateway: wanGateway && wanGateway !== '-' ? wanGateway : '',
+                                          dns: wanDns || '1.1.1.1, 8.8.8.8',
+                                          serviceList: wanService,
+                                          natEnabled: wanNat,
+                                          portBindings: { ...wanBindings },
+                                        });
+                                      }}
+                                      sx={actionIconBtnSx}
+                                    >
+                                      <EditOutlinedIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
+                                <Tooltip title="Delete WAN (DeleteObject via VParams)">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      disabled={!hasPermission('devices.parameters.write') || editingWanIndex !== null || deletingWanIndex !== null}
+                                      onClick={() => {
+                                        const ensureDot = (p: string) => (p.endsWith('.') ? p : `${p}.`);
+                                        const vpRoot = matchedAlias?.virtualParameters.wanRoot
+                                          ? ensureDot(matchedAlias.virtualParameters.wanRoot.replace(/\{i\}/g, String(w.instanceIndex)))
+                                          : '';
+                                        const connDevPath = w.connectionDevicePath || vpRoot || `${device.dataModelRoot}WANDevice.1.WANConnectionDevice.${w.instanceIndex}.`;
+                                        const siblingCount = (device.wanConnections ?? []).filter(
+                                          (item) => (item.connectionDevicePath ?? '') === connDevPath,
+                                        ).length;
+                                        const targetPath =
+                                          siblingCount > 1 && w.objectPath
+                                            ? ensureDot(w.objectPath)
+                                            : device.dataModelRoot === 'Device.'
+                                              ? ensureDot(w.objectPath || (w.connectionType === 'PPPoE' ? `Device.PPP.Interface.${w.instanceIndex}.` : vpRoot || `Device.IP.Interface.${w.instanceIndex}.`))
+                                              : ensureDot(vpRoot || connDevPath);
+                                        setDeleteWanConfirmTarget({
+                                          instanceIndex: w.instanceIndex,
+                                          name: formatWanLabel(w.name, w.instanceIndex),
+                                          connectionType: w.connectionType,
+                                          vlanLabel: wanVlanEnabled && wanVlan ? `VID ${wanVlan}` : VLAN_TYPE_LABELS[wanVlanType],
+                                          targetPath,
+                                          objectPath: w.objectPath,
+                                          connectionDevicePath: w.connectionDevicePath,
+                                        });
+                                      }}
+                                      sx={{
+                                        ...actionIconBtnSx,
+                                        color: '#94A3B8',
+                                        '&:hover:not(:disabled)': {
+                                          transform: 'scale(1.1)',
+                                          color: '#DC2626',
+                                          bgcolor: 'rgba(220, 38, 38, 0.08)',
+                                        },
+                                      }}
+                                    >
+                                      <DeleteOutlineIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
+                              </Stack>
                             }
                             editActions={
                               <Stack direction="row" spacing={0.5} justifyContent="flex-end">
@@ -3348,10 +3418,10 @@ export function DeviceDetailPage() {
           >
             <TableHead>
               <TableRow>
-                <TableCell sx={{ width: '43%' }}>Name</TableCell>
+                <TableCell sx={{ width: '41%' }}>Name</TableCell>
                 <TableCell sx={{ width: '21%' }}>Virtual Parameter</TableCell>
                 <TableCell sx={{ width: '26%' }}>Value</TableCell>
-                <TableCell align="right" sx={{ width: 92 }} />
+                <TableCell align="right" sx={{ width: 120 }} />
               </TableRow>
             </TableHead>
             <TableBody>
@@ -3475,6 +3545,38 @@ export function DeviceDetailPage() {
                           </Stack>
                         ) : (
                           <Stack direction="row" spacing={0.25} justifyContent="flex-end" alignItems="center">
+                            {summoningParamPath === p.path ? (
+                              <Box sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26 }}>
+                                <CircularProgress size={13} sx={{ color: '#0284C7' }} />
+                              </Box>
+                            ) : (
+                              <Tooltip title={vpKey ? `Summon VParam (${vpKey}): ${p.path}` : `Summon parameter: ${p.path}`}>
+                                <span>
+                                  <IconButton
+                                    size="small"
+                                    disabled={!hasPermission('devices.summon') || Boolean(summoningParamPath)}
+                                    onClick={() => {
+                                      if (!hasPermission('devices.summon')) {
+                                        showToast('error', 'Permission denied: devices.summon required.');
+                                        return;
+                                      }
+                                      const res = triggerSummon(device.id, [], [p.path]);
+                                      setSummoningParamPath(p.path);
+                                      watchedTaskIdRef.current = res.taskId;
+                                    }}
+                                    sx={{
+                                      color: vpKey ? '#0284C7' : '#64748B',
+                                      '&:hover:not(:disabled)': {
+                                        color: '#0369A1',
+                                        bgcolor: 'rgba(2, 132, 199, 0.08)',
+                                      },
+                                    }}
+                                  >
+                                    <BoltIcon sx={{ fontSize: 15 }} />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                            )}
                             <IconButton
                               size="small"
                               title="Map as Virtual Parameter"
@@ -3644,6 +3746,51 @@ export function DeviceDetailPage() {
             },
           }}
         />
+      </NocDialog>
+
+      {/* Dialog: Delete WAN Connection */}
+      <NocDialog
+        open={Boolean(deleteWanConfirmTarget)}
+        onClose={() => setDeleteWanConfirmTarget(null)}
+        title="Delete WAN Connection"
+        subtitle={
+          deleteWanConfirmTarget
+            ? `${deleteWanConfirmTarget.name} · ${deleteWanConfirmTarget.connectionType} (${deleteWanConfirmTarget.vlanLabel})`
+            : ''
+        }
+        icon={<DeleteOutlineIcon sx={{ fontSize: 18 }} />}
+        tone="danger"
+        confirmLabel="Delete WAN"
+        onConfirm={() => {
+          if (!deleteWanConfirmTarget) return;
+          if (status === 'never_connected' || status === 'disabled' || device.simulatedUnreachable) {
+            showToast('error', `ONT tidak dapat dijangkau (${status.replace('_', ' ')}). Tidak dapat menghapus WAN.`);
+            return;
+          }
+          const target = deleteWanConfirmTarget;
+          setDeleteWanConfirmTarget(null);
+          const res = deleteWanConnection(device.id, target.instanceIndex, {
+            objectPath: target.objectPath,
+            connectionDevicePath: target.connectionDevicePath,
+            connectionType: target.connectionType,
+          });
+          if (!res.ok) {
+            showToast('error', res.error ?? 'Failed to delete WAN connection');
+            return;
+          }
+          setDeletingWanIndex(target.instanceIndex);
+          if (res.taskId) watchedTaskIdRef.current = res.taskId;
+          showToast('info', `Queued DeleteObject for ${target.name}.`);
+        }}
+      >
+        <Typography sx={{ fontSize: '0.84rem', color: 'var(--noc-text-muted)', lineHeight: 1.55, mb: 1.5 }}>
+          Menghapus WAN interface pada perangkat via CWMP <b>DeleteObject</b> lalu menjalankan <b>VParams Summon</b> untuk sinkronisasi ulang:
+        </Typography>
+        <Box sx={{ p: 1.25, bgcolor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px' }}>
+          <Typography sx={{ fontFamily: MONO_FONT, fontSize: '0.75rem', color: 'error.main', wordBreak: 'break-all' }}>
+            {deleteWanConfirmTarget?.targetPath ?? '-'}
+          </Typography>
+        </Box>
       </NocDialog>
 
       {/* Dialog: Soft Delete Warning */}

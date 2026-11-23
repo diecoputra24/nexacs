@@ -71,3 +71,47 @@ func TestValidateAliasFieldsCommaSeparated(t *testing.T) {
 		t.Fatal("expected error for invalid OUI in comma-separated list")
 	}
 }
+
+func TestSecurityHelpers(t *testing.T) {
+	// API key least-privilege enforcement
+	readOnly := []string{"devices:read"}
+	if !apiKeyHasPermission(readOnly, "devices.view") {
+		t.Fatal("expected devices:read scope to allow devices.view")
+	}
+	if apiKeyHasPermission(readOnly, "devices.secrets.view") {
+		t.Fatal("expected devices:read scope NOT to allow devices.secrets.view")
+	}
+	if apiKeyHasPermission(readOnly, "security.users.manage") {
+		t.Fatal("expected devices:read scope NOT to allow security.users.manage")
+	}
+	provKey := []string{"provisioning:write", "devices:read"}
+	if !apiKeyHasPermission(provKey, "devices.parameters.write") {
+		t.Fatal("expected provisioning:write to allow devices.parameters.write")
+	}
+	if apiKeyHasPermission(provKey, "devices.factory_reset") {
+		t.Fatal("expected provisioning:write NOT to allow devices.factory_reset")
+	}
+	if !apiKeyHasPermission([]string{"*"}, "security.users.manage") {
+		t.Fatal("expected wildcard scope to allow admin permissions")
+	}
+
+	// Firmware filename sanitization
+	if got := sanitizeFirmwareFilename("../evil/fw_v1.2-rc1.bin"); got != "fw_v1.2-rc1.bin" {
+		t.Fatalf("unexpected sanitized firmware filename: %q", got)
+	}
+	for _, bad := range []string{"", ".", "..", "a b.bin", "bad;rm.bin"} {
+		if got := sanitizeFirmwareFilename(bad); got != "" {
+			t.Fatalf("expected rejected filename for %q, got %q", bad, got)
+		}
+	}
+
+	// Host header validation against URL injection
+	if got := validateHTTPRequestHost("acs.example.com:8000"); got != "acs.example.com" {
+		t.Fatalf("unexpected sanitized host: %q", got)
+	}
+	for _, badHost := range []string{"evil.com/path", "evil.com@good.com", "host with space"} {
+		if got := validateHTTPRequestHost(badHost); got != "" {
+			t.Fatalf("expected invalid host %q to be rejected, got %q", badHost, got)
+		}
+	}
+}

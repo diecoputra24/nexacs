@@ -17,6 +17,9 @@ func TestStatelessTokenRoundtrip(t *testing.T) {
 	if _, err := VerifyStatelessToken(tok, "wrong-secret"); err == nil {
 		t.Fatalf("expected signature verification failure")
 	}
+	if _, err := VerifyStatelessToken(tok, ""); err == nil {
+		t.Fatalf("expected empty signing key rejection")
+	}
 }
 
 func TestDigestAuthHeader(t *testing.T) {

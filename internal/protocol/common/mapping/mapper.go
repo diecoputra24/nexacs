@@ -722,3 +722,147 @@ func BuildProvisioningSetParams(dataModelRoot string, vp *VirtualParameterMappin
 	}
 	return out
 }
+
+var (
+	reTR098WanConnSubObj = regexp.MustCompile(`^(InternetGatewayDevice\.WANDevice\.(\d+)\.WANConnectionDevice\.(\d+)\.)((?:WANPPPConnection|WANIPConnection)\.\d+)\.?$`)
+	reTR098WanConnDevObj = regexp.MustCompile(`^(InternetGatewayDevice\.WANDevice\.(\d+)\.WANConnectionDevice\.(\d+))\.?$`)
+	reTR181WanIfaceObj   = regexp.MustCompile(`^(Device\.(PPP|IP)\.Interface\.(\d+))\.?$`)
+)
+
+func ensureTrailingDot(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasSuffix(trimmed, ".") {
+		return trimmed + "."
+	}
+	return trimmed
+}
+
+func instantiateWanRootFromVParams(vp *VirtualParameterMapping, instanceIndex int) string {
+	if vp == nil || instanceIndex <= 0 {
+		return ""
+	}
+	if tmpl := strings.TrimSpace(vp.WANRoot); tmpl != "" {
+		return ensureTrailingDot(strings.ReplaceAll(tmpl, "{i}", strconv.Itoa(instanceIndex)))
+	}
+	for _, tmpl := range []string{vp.WANPPPoEUsername, vp.WANExternalIP, vp.WANVlanID, vp.WANStatus} {
+		t := strings.ReplaceAll(strings.TrimSpace(tmpl), "{i}", strconv.Itoa(instanceIndex))
+		if idx := strings.Index(t, ".WANConnectionDevice."); idx >= 0 {
+			rest := t[idx+len(".WANConnectionDevice."):]
+			if dot := strings.Index(rest, "."); dot > 0 {
+				return ensureTrailingDot(t[:idx+len(".WANConnectionDevice.")+dot])
+			}
+		}
+		if strings.HasPrefix(t, "Device.PPP.Interface.") || strings.HasPrefix(t, "Device.IP.Interface.") {
+			parts := strings.SplitN(t, ".", 5)
+			if len(parts) >= 4 {
+				return ensureTrailingDot(strings.Join(parts[:4], "."))
+			}
+		}
+	}
+	return ""
+}
+
+// ResolveWanDeleteObjectPath determines the exact TR-069/TR-181 DeleteObject target
+// using the device's Virtual Parameters (vp.WANRoot / WAN* templates) and known parameter paths.
+// When multiple WANPPPConnection/WANIPConnection instances share the same WANConnectionDevice,
+// it targets only the specific child connection instance so sibling WAN services stay intact.
+func ResolveWanDeleteObjectPath(
+	dataModelRoot string,
+	vp *VirtualParameterMapping,
+	paramPaths []string,
+	reqObjectPath string,
+	instanceIndex int,
+	connectionType string,
+) string {
+	childPrefixCount := func(connDevPrefix string) (pppPrefixes []string, ipPrefixes []string) {
+		pppSeen := make(map[string]struct{})
+		ipSeen := make(map[string]struct{})
+		for _, p := range paramPaths {
+			if !strings.HasPrefix(p, connDevPrefix) {
+				continue
+			}
+			rem := strings.TrimPrefix(p, connDevPrefix)
+			parts := strings.SplitN(rem, ".", 3)
+			if len(parts) < 2 {
+				continue
+			}
+			subPrefix := connDevPrefix + parts[0] + "." + parts[1] + "."
+			switch parts[0] {
+			case "WANPPPConnection":
+				if _, ok := pppSeen[subPrefix]; !ok {
+					pppSeen[subPrefix] = struct{}{}
+					pppPrefixes = append(pppPrefixes, subPrefix)
+				}
+			case "WANIPConnection":
+				if _, ok := ipSeen[subPrefix]; !ok {
+					ipSeen[subPrefix] = struct{}{}
+					ipPrefixes = append(ipPrefixes, subPrefix)
+				}
+			}
+		}
+		return pppPrefixes, ipPrefixes
+	}
+
+	reqTrim := strings.TrimSpace(reqObjectPath)
+	if m := reTR098WanConnSubObj.FindStringSubmatch(reqTrim); len(m) == 5 {
+		connDevPrefix := m[1]
+		devIdx, _ := strconv.Atoi(m[3])
+		subObjPrefix := connDevPrefix + m[4] + "."
+		pppList, ipList := childPrefixCount(connDevPrefix)
+		if len(pppList)+len(ipList) > 1 {
+			return subObjPrefix
+		}
+		if vpRoot := instantiateWanRootFromVParams(vp, devIdx); vpRoot != "" && reTR098WanConnDevObj.MatchString(vpRoot) && (!strings.Contains(vpRoot, ".WANConnectionDevice.") || strings.HasPrefix(vpRoot, connDevPrefix)) {
+			return vpRoot
+		}
+		return connDevPrefix
+	}
+	if m := reTR098WanConnDevObj.FindStringSubmatch(reqTrim); len(m) == 4 {
+		devIdx, _ := strconv.Atoi(m[3])
+		reqDevPrefix := ensureTrailingDot(m[1])
+		if vpRoot := instantiateWanRootFromVParams(vp, devIdx); vpRoot != "" && reTR098WanConnDevObj.MatchString(vpRoot) && (!strings.Contains(vpRoot, ".WANConnectionDevice.") || strings.HasPrefix(vpRoot, reqDevPrefix)) {
+			return vpRoot
+		}
+		return reqDevPrefix
+	}
+	if m := reTR181WanIfaceObj.FindStringSubmatch(reqTrim); len(m) == 4 {
+		return ensureTrailingDot(m[1])
+	}
+
+	if instanceIndex <= 0 {
+		return ""
+	}
+
+	if dataModelRoot == "Device." {
+		if strings.EqualFold(strings.TrimSpace(connectionType), "PPPoE") {
+			return fmt.Sprintf("Device.PPP.Interface.%d.", instanceIndex)
+		}
+		if vpRoot := instantiateWanRootFromVParams(vp, instanceIndex); vpRoot != "" && strings.HasPrefix(vpRoot, "Device.") {
+			return vpRoot
+		}
+		return fmt.Sprintf("Device.IP.Interface.%d.", instanceIndex)
+	}
+
+	connDevPrefix := fmt.Sprintf("InternetGatewayDevice.WANDevice.1.WANConnectionDevice.%d.", instanceIndex)
+	if vpRoot := instantiateWanRootFromVParams(vp, instanceIndex); vpRoot != "" && strings.HasPrefix(vpRoot, "InternetGatewayDevice.") {
+		if reTR098WanConnDevObj.MatchString(vpRoot) {
+			connDevPrefix = vpRoot
+		} else {
+			return vpRoot
+		}
+	}
+	pppList, ipList := childPrefixCount(connDevPrefix)
+	if len(pppList)+len(ipList) > 1 {
+		if strings.EqualFold(strings.TrimSpace(connectionType), "PPPoE") && len(pppList) == 1 {
+			return pppList[0]
+		}
+		if !strings.EqualFold(strings.TrimSpace(connectionType), "PPPoE") && len(ipList) == 1 {
+			return ipList[0]
+		}
+	}
+	return connDevPrefix
+}
+

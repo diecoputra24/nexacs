@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+bin/
+data/
+*.exe
+*.log
+coverage/
+node_modules/
+nexaacs-web/node_modules/
+nexaacs-web/dist/

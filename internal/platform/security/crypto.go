@@ -124,6 +124,9 @@ type TokenClaims struct {
 
 // VerifyStatelessToken validates signature and expiration on an HMAC-SHA256 bearer token.
 func VerifyStatelessToken(token string, signingKey string) (*TokenClaims, error) {
+	if strings.TrimSpace(signingKey) == "" {
+		return nil, errors.New("token verification key is not configured")
+	}
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 2 {
 		return nil, errors.New("invalid token format")

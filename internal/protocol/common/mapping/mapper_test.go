@@ -130,6 +130,56 @@ func TestResolveManufacturerWithModel(t *testing.T) {
 	}
 }
 
+func TestResolveWanDeleteObjectPath(t *testing.T) {
+	vpCT := &VirtualParameterMapping{
+		WANRoot:          "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}",
+		WANPPPoEUsername: "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.1.Username",
+		WANVlanID:        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.X_CT-COM_WANGponLinkConfig.VLANIDMark",
+	}
+
+	// Single PPPoE WAN under WANConnectionDevice.2 -> deletes the WANConnectionDevice.{i}. container via WANRoot VParam
+	singleParams := []string{
+		"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1.Username",
+		"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1.ConnectionStatus",
+	}
+	if got := ResolveWanDeleteObjectPath("InternetGatewayDevice.", vpCT, singleParams, "", 2, "PPPoE"); got != "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2." {
+		t.Fatalf("expected single WANConnectionDevice.2 delete path, got %q", got)
+	}
+
+	// Sibling WANIPConnection.1 + WANPPPConnection.1 sharing WANConnectionDevice.1 -> must delete only target child object
+	sharedParams := []string{
+		"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.AddressingType",
+		"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username",
+	}
+	if got := ResolveWanDeleteObjectPath(
+		"InternetGatewayDevice.",
+		vpCT,
+		sharedParams,
+		"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.",
+		1,
+		"PPPoE",
+	); got != "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1." {
+		t.Fatalf("expected shared-container child delete path, got %q", got)
+	}
+
+	// Without explicit objectPath on shared container, connectionType selects sibling object
+	if got := ResolveWanDeleteObjectPath("InternetGatewayDevice.", vpCT, sharedParams, "", 1, "IPoE"); got != "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1." {
+		t.Fatalf("expected IPoE child delete path, got %q", got)
+	}
+
+	// TR-181 Device.PPP.Interface vs Device.IP.Interface
+	vpTR181 := &VirtualParameterMapping{
+		WANRoot:          "Device.IP.Interface.{i}",
+		WANPPPoEUsername: "Device.PPP.Interface.{i}.Username",
+	}
+	if got := ResolveWanDeleteObjectPath("Device.", vpTR181, nil, "", 3, "PPPoE"); got != "Device.PPP.Interface.3." {
+		t.Fatalf("expected TR-181 PPP delete path, got %q", got)
+	}
+	if got := ResolveWanDeleteObjectPath("Device.", vpTR181, nil, "", 4, "IPoE"); got != "Device.IP.Interface.4." {
+		t.Fatalf("expected TR-181 IP delete path, got %q", got)
+	}
+}
+
 func TestOpticalTransceiverFallbackPaths(t *testing.T) {
 	vpZTE := &VirtualParameterMapping{
 		RXPower:     "InternetGatewayDevice.WANDevice.1.X_ZTE-COM_WANPONInterfaceConfig.RXPower",

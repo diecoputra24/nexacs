@@ -238,12 +238,16 @@ function extractLiveWanConnections(parameters?: DeviceParameter[]): WANConnectio
       const connIdx = Number(tr098[4]);
       const leaf = tr098[5];
       const key = `tr098:${String(wanDevIdx).padStart(3, '0')}:${String(connDevIdx).padStart(3, '0')}:${objType}:${String(connIdx).padStart(3, '0')}`;
+      const connDevPath = `InternetGatewayDevice.WANDevice.${wanDevIdx}.WANConnectionDevice.${connDevIdx}.`;
+      const objPath = `${connDevPath}${objType}.${connIdx}.`;
       const draft = ensureEntry(
         key,
         connDevIdx,
         objType === 'WANPPPConnection' ? 'PPPoE' : 'IPoE',
         `${connDevIdx}_${objType === 'WANPPPConnection' ? 'PPP' : 'IP'}_${connIdx}`,
       );
+      draft.connectionDevicePath = connDevPath;
+      draft.objectPath = objPath;
       draft._connDevKey = `${wanDevIdx}:${connDevIdx}`;
       draft._hasFields++;
       const val = p.value ?? '';
@@ -293,6 +297,8 @@ function extractLiveWanConnections(parameters?: DeviceParameter[]): WANConnectio
       const leaf = tr181[3];
       const key = `tr181:${ifaceType}:${String(idx).padStart(3, '0')}`;
       const draft = ensureEntry(key, idx, ifaceType === 'PPP' ? 'PPPoE' : 'IPoE', `${ifaceType}_${idx}`);
+      draft.connectionDevicePath = `Device.${ifaceType}.Interface.${idx}.`;
+      draft.objectPath = `Device.${ifaceType}.Interface.${idx}.`;
       draft._hasFields++;
       const val = p.value ?? '';
       if (leaf === 'Name' && val) draft.name = val;
@@ -326,6 +332,8 @@ function extractLiveWanConnections(parameters?: DeviceParameter[]): WANConnectio
     const resolvedVlanEnabled = resolvedVlanType === 'tag';
     return {
       instanceIndex: resolvedIdx,
+      objectPath: item.objectPath,
+      connectionDevicePath: item.connectionDevicePath,
       name: item.name,
       connectionType: item.connectionType,
       addressingMode: item.addressingMode,

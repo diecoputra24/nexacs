@@ -1,4 +1,4 @@
-.PHONY: build build-api build-cwmp build-usp build-worker test tidy frontend-install frontend-build
+.PHONY: build build-api build-cwmp build-usp build-worker test tidy frontend-install frontend-build docker-build docker-up docker-down docker-logs
 
 BIN_DIR=bin
 
@@ -31,3 +31,15 @@ frontend-install:
 
 frontend-build:
 	cd nexaacs-web && npm run build
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f --tail=100

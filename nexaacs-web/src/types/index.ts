@@ -32,6 +32,8 @@ export type TaskType =
   | 'refresh_params'
   | 'get_parameter_values'
   | 'set_parameter_values'
+  | 'add_object'
+  | 'delete_object'
   | 'reboot'
   | 'factory_reset'
   | 'download_firmware';
@@ -113,6 +115,8 @@ export interface WanPortBindings {
 
 export interface WANConnection {
   instanceIndex: number;
+  objectPath?: string;
+  connectionDevicePath?: string;
   name: string;
   connectionType: 'PPPoE' | 'IPoE' | 'Bridge';
   addressingMode?: 'DHCP' | 'Static';

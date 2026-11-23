@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +29,10 @@ func main() {
 		panic(err)
 	}
 	log := logger.New("nexaacs-api", cfg.App.LogLevel)
+	if err := cfg.ValidateAPISecurity(); err != nil {
+		log.Error("security configuration validation failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -53,7 +59,7 @@ func main() {
 	}
 	cfg.Storage.FirmwareDir = fwDir
 
-	hub := websocket.NewHub(log)
+	hub := websocket.NewHub(log, cfg.API.CORSAllowedOrigins)
 	handler := httpdelivery.NewRouter(cfg, log, pool, hub)
 
 	srv := &http.Server{
@@ -68,7 +74,29 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	fsMux.Handle("/", http.FileServer(http.Dir(fwDir)))
+	absFwDir, _ := filepath.Abs(fwDir)
+	fsMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		cleanPath := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+		if cleanPath == "" || cleanPath == "." || strings.Contains(cleanPath, "/") || strings.Contains(cleanPath, "\\") {
+			http.NotFound(w, r)
+			return
+		}
+		fullPath := filepath.Join(absFwDir, cleanPath)
+		if !strings.HasPrefix(fullPath, absFwDir+string(filepath.Separator)) {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := os.Stat(fullPath)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, fullPath)
+	})
 	fsSrv := &http.Server{
 		Addr:        cfg.Storage.FileServerListenAddr,
 		Handler:     fsMux,

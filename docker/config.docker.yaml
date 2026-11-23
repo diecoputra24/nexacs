@@ -1,0 +1,63 @@
+app:
+  name: NexACS
+  environment: production
+  log_level: info
+  timezone: Asia/Jakarta
+
+api:
+  listen_addr: "0.0.0.0:7557"
+  cors_allowed_origins:
+    - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
+  read_timeout_seconds: 15
+  write_timeout_seconds: 30
+
+cwmp:
+  listen_addr: "0.0.0.0:7547"
+  path: "/cwmp"
+  session_timeout_seconds: 60
+  max_body_bytes: 2097152
+  allow_auto_enroll: true
+  connection_request_timeout_seconds: 10
+  block_private_ssrf_targets: false
+
+usp:
+  listen_addr: "0.0.0.0:8085"
+  controller_endpoint_id: "proto::nexaacs-controller"
+  default_mtp: "mqtt"
+  mqtt_broker_url: "tcp://127.0.0.1:1883"
+  websocket_path: "/usp"
+  message_expiry_seconds: 120
+
+worker:
+  concurrency: 16
+  heartbeat_interval_seconds: 10
+  lease_duration_seconds: 60
+  poll_interval_seconds: 2
+  max_task_retries: 3
+
+database:
+  dsn: "${NEXAACS_DB_DSN}"
+  max_conns: 20
+  min_conns: 2
+
+redis:
+  addr: "${NEXAACS_REDIS_ADDR}"
+  password: "${NEXAACS_REDIS_PASSWORD}"
+  db: 0
+
+storage:
+  firmware_dir: "/var/lib/nexaacs/firmware"
+  uploads_dir: "/var/lib/nexaacs/uploads"
+  backups_dir: "/var/lib/nexaacs/backups"
+  file_server_listen_addr: "0.0.0.0:7567"
+  public_file_url: "${NEXAACS_FILE_PUBLIC_URL}"
+
+thresholds:
+  online_threshold_seconds: 1800
+  temp_warning_c: 45.0
+  temp_critical_c: 55.0
+  rx_strong_min_dbm: -12.0
+  rx_good_min_dbm: -20.0
+  rx_attention_min_dbm: -24.0
+  rx_weak_min_dbm: -27.0

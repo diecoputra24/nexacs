@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,22 +22,47 @@ type Event struct {
 }
 
 type Hub struct {
-	log     *slog.Logger
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]struct{}
+	log            *slog.Logger
+	allowAnyOrigin bool
+	originPatterns []string
+	mu             sync.RWMutex
+	clients        map[*websocket.Conn]struct{}
 }
 
-func NewHub(log *slog.Logger) *Hub {
+func NewHub(log *slog.Logger, allowedOrigins ...[]string) *Hub {
+	var patterns []string
+	allowAny := false
+	if len(allowedOrigins) > 0 {
+		for _, o := range allowedOrigins[0] {
+			trimmed := strings.TrimSpace(o)
+			if trimmed == "" {
+				continue
+			}
+			if trimmed == "*" {
+				allowAny = true
+				continue
+			}
+			if u, err := url.Parse(trimmed); err == nil && u.Host != "" {
+				patterns = append(patterns, u.Host)
+			} else {
+				patterns = append(patterns, trimmed)
+			}
+		}
+	}
 	return &Hub{
-		log:     log,
-		clients: make(map[*websocket.Conn]struct{}),
+		log:            log,
+		allowAnyOrigin: allowAny,
+		originPatterns: patterns,
+		clients:        make(map[*websocket.Conn]struct{}),
 	}
 }
 
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // Configure explicit OriginPatterns via config in production
-	})
+	opts := &websocket.AcceptOptions{
+		InsecureSkipVerify: h.allowAnyOrigin,
+		OriginPatterns:     h.originPatterns,
+	}
+	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		h.log.Warn("websocket accept failed", slog.String("error", err.Error()))
 		return

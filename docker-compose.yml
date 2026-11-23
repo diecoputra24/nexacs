@@ -1,0 +1,152 @@
+x-backend-build: &backend-build
+  context: .
+  dockerfile: docker/Dockerfile.backend
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexacs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexaacs}
+      POSTGRES_USER: ${POSTGRES_USER:-nexaacs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - nexacs_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexaacs} -d ${POSTGRES_DB:-nexaacs}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexacs-redis
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru --requirepass "$$REDIS_PASSWORD"
+        else
+          exec redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru
+        fi
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - nexacs_redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then redis-cli -a \"$$REDIS_PASSWORD\" ping; else redis-cli ping; fi | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: *backend-build
+    image: nexacs-backend:latest
+    container_name: nexacs-api
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nexaacs-api", "-config", "/etc/nexaacs/config.yaml"]
+    environment:
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+      NEXAACS_DB_DSN: postgres://${POSTGRES_USER:-nexaacs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nexaacs}?sslmode=disable
+      NEXAACS_REDIS_ADDR: redis:6379
+      NEXAACS_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      NEXAACS_JWT_SIGNING_KEY: ${NEXAACS_JWT_SIGNING_KEY:?NEXAACS_JWT_SIGNING_KEY must be set in .env}
+      NEXAACS_SECRET_MASTER_KEY: ${NEXAACS_SECRET_MASTER_KEY:?NEXAACS_SECRET_MASTER_KEY must be set in .env}
+      NEXAACS_CWMP_SHARED_USERNAME: ${NEXAACS_CWMP_SHARED_USERNAME:-acs_cpe}
+      NEXAACS_CWMP_SHARED_PASSWORD: ${NEXAACS_CWMP_SHARED_PASSWORD:-}
+      NEXAACS_CORS_ALLOWED_ORIGINS: ${NEXAACS_CORS_ALLOWED_ORIGINS:-http://localhost:8000}
+      NEXAACS_FILE_PUBLIC_URL: ${NEXAACS_FILE_PUBLIC_URL:-}
+    ports:
+      - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-7557}:7557"
+      - "${FS_PORT:-7567}:7567"
+    volumes:
+      - nexacs_data:/var/lib/nexaacs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7557/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  cwmp:
+    build: *backend-build
+    image: nexacs-backend:latest
+    container_name: nexacs-cwmp
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nexaacs-cwmp", "-config", "/etc/nexaacs/config.yaml"]
+    environment:
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+      NEXAACS_DB_DSN: postgres://${POSTGRES_USER:-nexaacs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nexaacs}?sslmode=disable
+      NEXAACS_REDIS_ADDR: redis:6379
+      NEXAACS_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      NEXAACS_SECRET_MASTER_KEY: ${NEXAACS_SECRET_MASTER_KEY:?NEXAACS_SECRET_MASTER_KEY must be set in .env}
+      NEXAACS_CWMP_SHARED_USERNAME: ${NEXAACS_CWMP_SHARED_USERNAME:-acs_cpe}
+      NEXAACS_CWMP_SHARED_PASSWORD: ${NEXAACS_CWMP_SHARED_PASSWORD:-}
+    ports:
+      - "${CWMP_PORT:-7547}:7547"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7547/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: *backend-build
+    image: nexacs-backend:latest
+    container_name: nexacs-worker
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nexaacs-worker", "-config", "/etc/nexaacs/config.yaml"]
+    environment:
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+      NEXAACS_DB_DSN: postgres://${POSTGRES_USER:-nexaacs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nexaacs}?sslmode=disable
+      NEXAACS_REDIS_ADDR: redis:6379
+      NEXAACS_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      NEXAACS_SECRET_MASTER_KEY: ${NEXAACS_SECRET_MASTER_KEY:?NEXAACS_SECRET_MASTER_KEY must be set in .env}
+      NEXAACS_CWMP_SHARED_USERNAME: ${NEXAACS_CWMP_SHARED_USERNAME:-acs_cpe}
+      NEXAACS_CWMP_SHARED_PASSWORD: ${NEXAACS_CWMP_SHARED_PASSWORD:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  usp:
+    build: *backend-build
+    image: nexacs-backend:latest
+    container_name: nexacs-usp
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nexaacs-usp", "-config", "/etc/nexaacs/config.yaml"]
+    environment:
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    image: nexacs-web:latest
+    container_name: nexacs-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  nexacs_pgdata:
+  nexacs_redisdata:
+  nexacs_data:

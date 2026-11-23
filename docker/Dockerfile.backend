@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+RUN apk add --no-cache git ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+COPY migrations ./migrations
+COPY configs ./configs
+COPY data-models ./data-models
+
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexaacs-api ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexaacs-cwmp ./cmd/cwmp && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexaacs-usp ./cmd/usp && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/nexaacs-worker ./cmd/worker
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata wget && \
+    addgroup -S nexaacs && \
+    adduser -S -G nexaacs -H -s /sbin/nologin nexaacs && \
+    mkdir -p /opt/nexaacs /etc/nexaacs /var/lib/nexaacs/firmware /var/lib/nexaacs/uploads /var/lib/nexaacs/backups && \
+    chown -R nexaacs:nexaacs /opt/nexaacs /var/lib/nexaacs
+
+WORKDIR /opt/nexaacs
+COPY --from=builder /out/nexaacs-* /usr/local/bin/
+COPY --chown=nexaacs:nexaacs docker/config.docker.yaml /etc/nexaacs/config.yaml
+COPY --chown=nexaacs:nexaacs data-models /opt/nexaacs/data-models
+
+USER nexaacs
+
+EXPOSE 7557 7547 7567 8085
+ENTRYPOINT ["/usr/local/bin/nexaacs-api", "-config", "/etc/nexaacs/config.yaml"]

@@ -40,7 +40,14 @@ func main() {
 	}
 	defer pool.Close()
 
-	cipher, _ := security.NewSecretCipherFromHex(cfg.API.SecretMasterKeyHex)
+	var cipher *security.SecretCipher
+	if cfg.API.SecretMasterKeyHex != "" {
+		cipher, err = security.NewSecretCipherFromHex(cfg.API.SecretMasterKeyHex)
+		if err != nil {
+			log.Error("invalid NEXAACS_SECRET_MASTER_KEY", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+	}
 	store := postgres.NewStore(pool).WithCipher(cipher)
 	cwmpHandler := cwmpserver.New(&cfg.CWMP, log, store)
 
