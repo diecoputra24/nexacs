@@ -1,0 +1,120 @@
+{
+  "data_model": "TR-098",
+  "version": "1.4",
+  "root_object": "InternetGatewayDevice.",
+  "mappings": [
+    {
+      "canonical_key": "device.serial_number",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.SerialNumber",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "device.manufacturer",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.Manufacturer",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "manufacturer_alias"
+    },
+    {
+      "canonical_key": "device.oui",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.ManufacturerOUI",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "uppercase_trim"
+    },
+    {
+      "canonical_key": "device.product_class",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.ProductClass",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "device.model_name",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.ModelName",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "device.hardware_version",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.HardwareVersion",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "device.software_version",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "device.uptime_seconds",
+      "parameter_path": "InternetGatewayDevice.DeviceInfo.UpTime",
+      "value_type": "unsignedInt",
+      "unit": "s",
+      "read_write": "R",
+      "transform": "parse_int"
+    },
+    {
+      "canonical_key": "management.connection_request_url",
+      "parameter_path": "InternetGatewayDevice.ManagementServer.ConnectionRequestURL",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "management.periodic_inform_interval",
+      "parameter_path": "InternetGatewayDevice.ManagementServer.PeriodicInformInterval",
+      "value_type": "unsignedInt",
+      "unit": "s",
+      "read_write": "RW",
+      "transform": "parse_int"
+    },
+    {
+      "canonical_key": "wan.external_ip",
+      "parameter_path": "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANIPConnection.{j}.ExternalIPAddress",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "R",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "wan.pppoe_username",
+      "parameter_path": "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{i}.WANPPPConnection.{j}.Username",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "RW",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "wifi.ssid",
+      "parameter_path": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.{i}.SSID",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "RW",
+      "transform": "identity"
+    },
+    {
+      "canonical_key": "wifi.security_key",
+      "parameter_path": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.{i}.PreSharedKey.1.KeyPassphrase",
+      "value_type": "string",
+      "unit": "",
+      "read_write": "RW",
+      "is_secret": true,
+      "transform": "identity"
+    }
+  ]
+}

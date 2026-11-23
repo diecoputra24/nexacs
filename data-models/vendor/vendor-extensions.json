@@ -1,0 +1,73 @@
+{
+  "vendor_extensions": [
+    {
+      "manufacturer": "ZTE",
+      "models": ["F670L", "F609", "XST99"],
+      "technology": "GPON",
+      "validated": false,
+      "notes": "Requires hardware field validation against actual firmware output before marking production-verified",
+      "mappings": [
+        {
+          "canonical_key": "optical.rx_power_dbm",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_ZTE-COM_WANPONInterfaceConfig.RXPower",
+          "value_type": "float",
+          "unit": "dBm",
+          "transform": "zte_rx_dbm_or_mw"
+        },
+        {
+          "canonical_key": "device.temperature_celsius",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_ZTE-COM_WANPONInterfaceConfig.TransceiverTemperature",
+          "value_type": "float",
+          "unit": "°C",
+          "transform": "zte_temp_celsius"
+        }
+      ]
+    },
+    {
+      "manufacturer": "Huawei",
+      "models": ["HG8245H", "EG8145V5", "HG8145V5"],
+      "technology": "GPON",
+      "validated": false,
+      "notes": "Huawei X_HW_OpticalInfo typically reports RXPower in 0.001 mW or dBm depending on firmware",
+      "mappings": [
+        {
+          "canonical_key": "optical.rx_power_dbm",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_GponInterafceConfig.RXPower",
+          "value_type": "float",
+          "unit": "dBm",
+          "transform": "huawei_rx_dbm"
+        },
+        {
+          "canonical_key": "device.temperature_celsius",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_GponInterafceConfig.TransceiverTemperature",
+          "value_type": "float",
+          "unit": "°C",
+          "transform": "parse_float"
+        }
+      ]
+    },
+    {
+      "manufacturer": "Fiberhome",
+      "models": ["AN5506-04-FA", "HG6243C"],
+      "technology": "GPON",
+      "validated": false,
+      "notes": "Fiberhome X_FH_GponInterfaceConfig path variant",
+      "mappings": [
+        {
+          "canonical_key": "optical.rx_power_dbm",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_FH_GponInterfaceConfig.RXPower",
+          "value_type": "float",
+          "unit": "dBm",
+          "transform": "parse_float"
+        },
+        {
+          "canonical_key": "device.temperature_celsius",
+          "parameter_path": "InternetGatewayDevice.WANDevice.1.X_FH_GponInterfaceConfig.TransceiverTemperature",
+          "value_type": "float",
+          "unit": "°C",
+          "transform": "parse_float"
+        }
+      ]
+    }
+  ]
+}

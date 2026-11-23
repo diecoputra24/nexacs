@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+bin/
+data/
+node_modules/
+nexaacs-web/node_modules/
+nexaacs-web/dist/

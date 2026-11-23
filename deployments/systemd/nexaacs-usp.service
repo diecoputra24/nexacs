@@ -1,0 +1,22 @@
+[Unit]
+Description=NexaACS TR-369 USP Controller Service
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=nexaacs
+Group=nexaacs
+WorkingDirectory=/opt/nexaacs/backend
+EnvironmentFile=/etc/nexaacs/secrets.env
+ExecStart=/opt/nexaacs/backend/bin/nexaacs-usp -config /etc/nexaacs/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/nexaacs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
